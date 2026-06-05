@@ -928,6 +928,14 @@ function decodeMcpArgsMap(args: Record<string, Uint8Array>): Record<string, unkn
 
 // ── Build Cursor protobuf request ──
 
+const EFFORT_SUFFIXES = new Set(["low", "medium", "high", "xhigh", "max", "none"]);
+
+function modelRequiresMaxMode(modelId: string): boolean {
+  const stripped = modelId.endsWith("-fast") ? modelId.slice(0, -5) : modelId;
+  const lastDash = stripped.lastIndexOf("-");
+  return lastDash >= 0 && EFFORT_SUFFIXES.has(stripped.slice(lastDash + 1));
+}
+
 function encodeMcpArgValue(value: unknown): Uint8Array {
   try {
     return toBinary(ValueSchema, fromJson(ValueSchema, value as JsonValue));
@@ -1103,7 +1111,7 @@ export function buildCursorRequest(
   const action = create(ConversationActionSchema, {
     action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
   });
-  const requestedModel = create(RequestedModelSchema, { modelId, maxMode: true, parameters: [] });
+  const requestedModel = create(RequestedModelSchema, { modelId, maxMode: modelRequiresMaxMode(modelId), parameters: [] });
   const runRequest = create(AgentRunRequestSchema, { conversationState, action, requestedModel, conversationId });
   const clientMessage = create(AgentClientMessageSchema, {
     message: { case: "runRequest", value: runRequest },
