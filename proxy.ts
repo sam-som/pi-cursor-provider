@@ -48,6 +48,7 @@ import {
   McpToolDefinitionSchema,
   McpToolResultContentItemSchema,
   ModelDetailsSchema,
+  RequestedModelSchema,
   ReadRejectedSchema,
   ReadResultSchema,
   RequestContextResultSchema,
@@ -1102,8 +1103,8 @@ export function buildCursorRequest(
   const action = create(ConversationActionSchema, {
     action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
   });
-  const modelDetails = create(ModelDetailsSchema, { modelId, displayModelId: modelId, displayName: modelId });
-  const runRequest = create(AgentRunRequestSchema, { conversationState, action, modelDetails, conversationId });
+  const requestedModel = create(RequestedModelSchema, { modelId, maxMode: true, parameters: [] });
+  const runRequest = create(AgentRunRequestSchema, { conversationState, action, requestedModel, conversationId });
   const clientMessage = create(AgentClientMessageSchema, {
     message: { case: "runRequest", value: runRequest },
   });
@@ -1460,14 +1461,32 @@ function createConnectFrameParser(
   };
 }
 
-function parseConnectEndStream(data: Uint8Array): Error | null {
+type ConnectEndResult =
+  | { kind: "ok" }
+  | { kind: "confirmation" }
+  | { kind: "error"; error: Error };
+
+function parseConnectEndStream(data: Uint8Array): ConnectEndResult {
   try {
     const payload = JSON.parse(new TextDecoder().decode(data));
     const error = payload?.error;
-    if (error) return new Error(`Connect error ${error.code ?? "unknown"}: ${error.message ?? "Unknown error"}`);
-    return null;
+    if (error) {
+      const details = error.details ?? [];
+      const isConfirmation = details.some(
+        (d: { debug?: { details?: { analyticsMetadata?: { actionRequired?: string } } } }) =>
+          d?.debug?.details?.analyticsMetadata?.actionRequired === "confirmation",
+      );
+      if (isConfirmation) {
+        console.error("[cursor-provider] Connect confirmation required, retrying:", JSON.stringify(payload));
+        return { kind: "confirmation" };
+      }
+      const detailStr = details.length ? ` | details: ${JSON.stringify(details)}` : "";
+      console.error("[cursor-provider] Connect error payload:", JSON.stringify(payload));
+      return { kind: "error", error: new Error(`Connect error ${error.code ?? "unknown"}: ${error.message ?? "Unknown error"}${detailStr}`) };
+    }
+    return { kind: "ok" };
   } catch {
-    return new Error("Failed to parse Connect end stream");
+    return { kind: "error", error: new Error("Failed to parse Connect end stream") };
   }
 }
 
@@ -1579,6 +1598,8 @@ function handleStreamingResponse(
     req,
     res,
     requestId,
+    accessToken,
+    payload.requestBytes,
   );
 }
 
@@ -1622,6 +1643,9 @@ function writeSSEStream(
   req: IncomingMessage,
   res: ServerResponse,
   requestId?: string,
+  accessToken?: string,
+  requestBytes?: Uint8Array,
+  retried = false,
 ): void {
   debugLog("stream.writer_start", { requestId, bridgeKey, convKey, modelId, completedTurnCount: completedTurns.length, currentTurn });
   const completionId = `chatcmpl-${crypto.randomUUID().replace(/-/g, "").slice(0, 28)}`;
@@ -1751,11 +1775,24 @@ function writeSSEStream(
       }
     },
     (endStreamBytes) => {
-      const endError = parseConnectEndStream(endStreamBytes);
-      if (endError) {
-        console.error(`[cursor-provider] Cursor stream error (${modelId}):`, endError.message);
+      const result = parseConnectEndStream(endStreamBytes);
+      if (result.kind === "confirmation" && !retried && accessToken && requestBytes) {
+        cleanupBridge(bridge, heartbeatTimer, bridgeKey);
+        const retry = startBridge(accessToken, requestBytes);
+        writeSSEStream(
+          retry.bridge, retry.heartbeatTimer, blobStore, mcpTools,
+          modelId, bridgeKey, convKey, completedTurns, currentTurn,
+          req, res, requestId, accessToken, requestBytes, true,
+        );
+        return;
+      }
+      if (result.kind === "error" || result.kind === "confirmation") {
+        const msg = result.kind === "confirmation"
+          ? "Cursor requires MAX mode confirmation but retry is disabled"
+          : result.error.message;
+        console.error(`[cursor-provider] Cursor stream error (${modelId}):`, msg);
         conversationStates.delete(convKey);
-        sendSSE(makeChunk({ content: endError.message }, "error"));
+        sendSSE(makeChunk({ content: msg }, "error"));
         sendSSE(makeUsageChunk());
         sendDone();
         closeResponse();
@@ -1990,11 +2027,15 @@ async function handleNonStreamingResponse(
         }
       },
       (endStreamBytes) => {
-        const endError = parseConnectEndStream(endStreamBytes);
-        if (endError) {
-          console.error(`[cursor-provider] Cursor non-stream error (${modelId}):`, endError.message);
+        const result = parseConnectEndStream(endStreamBytes);
+        if (result.kind === "error") {
+          console.error(`[cursor-provider] Cursor non-stream error (${modelId}):`, result.error.message);
           conversationStates.delete(convKey);
-          nonStreamError = endError;
+          nonStreamError = result.error;
+        } else if (result.kind === "confirmation") {
+          console.error(`[cursor-provider] Cursor non-stream confirmation (${modelId}): not retried in non-stream path`);
+          conversationStates.delete(convKey);
+          nonStreamError = new Error("Cursor requires MAX mode confirmation — please retry your request");
         }
       },
     ));
