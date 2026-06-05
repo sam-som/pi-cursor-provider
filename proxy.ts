@@ -48,6 +48,7 @@ import {
   McpToolDefinitionSchema,
   McpToolResultContentItemSchema,
   ModelDetailsSchema,
+  RequestedModelSchema,
   ReadRejectedSchema,
   ReadResultSchema,
   RequestContextResultSchema,
@@ -1102,8 +1103,8 @@ export function buildCursorRequest(
   const action = create(ConversationActionSchema, {
     action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
   });
-  const modelDetails = create(ModelDetailsSchema, { modelId, displayModelId: modelId, displayName: modelId });
-  const runRequest = create(AgentRunRequestSchema, { conversationState, action, modelDetails, conversationId });
+  const requestedModel = create(RequestedModelSchema, { modelId, maxMode: true, parameters: [] });
+  const runRequest = create(AgentRunRequestSchema, { conversationState, action, requestedModel, conversationId });
   const clientMessage = create(AgentClientMessageSchema, {
     message: { case: "runRequest", value: runRequest },
   });
