@@ -48,6 +48,7 @@ import {
   McpToolDefinitionSchema,
   McpToolResultContentItemSchema,
   ModelDetailsSchema,
+  RequestedModelSchema,
   ReadRejectedSchema,
   ReadResultSchema,
   RequestContextResultSchema,
@@ -1102,8 +1103,8 @@ export function buildCursorRequest(
   const action = create(ConversationActionSchema, {
     action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
   });
-  const modelDetails = create(ModelDetailsSchema, { modelId, displayModelId: modelId, displayName: modelId });
-  const runRequest = create(AgentRunRequestSchema, { conversationState, action, modelDetails, conversationId });
+  const requestedModel = create(RequestedModelSchema, { modelId, maxMode: true, parameters: [] });
+  const runRequest = create(AgentRunRequestSchema, { conversationState, action, requestedModel, conversationId });
   const clientMessage = create(AgentClientMessageSchema, {
     message: { case: "runRequest", value: runRequest },
   });
@@ -1464,7 +1465,7 @@ function parseConnectEndStream(data: Uint8Array): Error | null {
   try {
     const payload = JSON.parse(new TextDecoder().decode(data));
     const error = payload?.error;
-    if (error) return new Error(`Connect error ${error.code ?? "unknown"}: ${error.message ?? "Unknown error"}`);
+    if (error) { const details = error.details ? ` | details: ${JSON.stringify(error.details)}` : ""; console.error("[cursor-provider] Connect error payload:", JSON.stringify(payload)); return new Error(`Connect error ${error.code ?? "unknown"}: ${error.message ?? "Unknown error"}${details}`); }
     return null;
   } catch {
     return new Error("Failed to parse Connect end stream");
