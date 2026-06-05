@@ -1465,7 +1465,7 @@ function parseConnectEndStream(data: Uint8Array): Error | null {
   try {
     const payload = JSON.parse(new TextDecoder().decode(data));
     const error = payload?.error;
-    if (error) return new Error(`Connect error ${error.code ?? "unknown"}: ${error.message ?? "Unknown error"}`);
+    if (error) { const details = error.details ? ` | details: ${JSON.stringify(error.details)}` : ""; console.error("[cursor-provider] Connect error payload:", JSON.stringify(payload)); return new Error(`Connect error ${error.code ?? "unknown"}: ${error.message ?? "Unknown error"}${details}`); }
     return null;
   } catch {
     return new Error("Failed to parse Connect end stream");
